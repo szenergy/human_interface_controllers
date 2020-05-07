@@ -2,247 +2,234 @@
 #include <algorithm>
 #include <cstdint>
 #include <memory>
-
-#include <SDL2/SDL.h>
+#include <cstdio>
+#include <thread>
+#include <chrono>
 
 #include <ros/ros.h>
+
+
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <signal.h>
+
+#include <linux/input.h>
+
+#include <ncurses.h>
+
 #include <autoware_msgs/ControlCommandStamped.h>
 
-enum AppState { RUNNING, QUIT };
+#include <szelectricity_common/MathCommon.hpp>
 
-enum ControlState { IDLE, ACCELERATING, DECCELERATING};
-enum TransmissionState {FORWARD, REVERSE };
-
-template<class T>
-constexpr const T& clamp( const T& v, const T& lo, const T& hi )
+namespace szenergy
 {
-    return (v < lo) ? lo : (hi < v) ? hi : v;
-}
+
+constexpr double EPS_CONTROL_LINVEL_ERROR = 0.04;
+constexpr double EPS_CONTROL_ANG_ERROR = 0.005;
+
+constexpr const char* KEYBOARD_MONITOR_INPUT_FIFO_NAME = "KeyboardMonitorInputFifo";
+
+enum class ControllerState {IDLE, CONTROL, STOPPED};
+
+enum class SteerState {IDLE, STEER};
 
 
-
-struct VehicleTeleopState
+class KeyboardController
 {
-	double acceleration;
-	double current_speed;
-	double last_measurement;
-	double wheel_angle;
-	AppState appstate = RUNNING;
-	ControlState control_state = IDLE;
-	TransmissionState transmission_state = FORWARD;
-};
-
-struct VehicleTeleopConfig
-{
-	double update_freq;
-};
-
-constexpr double MAX_ACCELERATION = 3.0;
-constexpr double MAX_BRAKE = 4*MAX_ACCELERATION;
-constexpr double D_ACCELERATION_RATE = 0.1;
-constexpr double D_BRAKE_RATE = 0.3;
-constexpr double DECCELERATION_RATE = 5.5;
-constexpr double MAX_WHEEL_ANG = 32.0*M_PI/180.0;
-constexpr double D_WHEEL_ANG = MAX_WHEEL_ANG/7.0;
-
-class KeyboardApp {
 private:
-	// Configuration
-	std::unique_ptr<VehicleTeleopConfig> teleop_config;
-	// Teleoperation state
-	std::unique_ptr<VehicleTeleopState> teleop_state;
-	//
+	ros::NodeHandle nh;
+	const double ACCELERATION_RATE = 0.7;
+	const double ANG_RATE = 0.2;
+	const double BRAKE_RATE = 0.2;
+	const double DECAY_VEL_RATE = 0.4;
+	const double DECAY_ANG_RATE = 0.05;
+	const double LIMIT_WHEEL_ANGLE = 32*M_PI/180.0;
 
-	SDL_Event e;
-	//The window we'll be rendering to
-	SDL_Window* gWindow;
-
-	//The surface contained by the window
-	SDL_Surface* gScreenSurface;
-
-	//The image we will load and show on the screen
-	SDL_Surface* gHelloWorld;
-	// ROS specific stuff
-	ros::NodeHandle& nh;
-	ros::Timer ctrl_timer;
-	// Publisher
-	autoware_msgs::ControlCommandStamped msg_ctrl_cmd;
-	ros::Publisher pub_ctrl_cmd;
+	ControllerState cstate;
+	SteerState steerstate;
+	int input_fifo_filestream;
+	std::thread keyboard_thread;
+	// Starting periodical publish of control message
+	ros::Timer timer;
+	ros::Timer timer_decay;
+	ros::Publisher pub_cmd;
+	autoware_msgs::ControlCommandStamped cmd;
+	ros::Time t_prev_ros;
 public:
-	KeyboardApp(ros::NodeHandle& nh): nh(nh), teleop_state(new VehicleTeleopState())
-	{
+	KeyboardController(ros::NodeHandle& nh):
+		nh(nh),
+		input_fifo_filestream(-1),
+		steerstate(SteerState::IDLE),
+		cstate(ControllerState::IDLE){}
 
-	}
-
-	~KeyboardApp()
+	void keyboard_thread_worker()
 	{
-		teleop_state.reset();
-	}
-
-	bool init(double update_freq)
-	{
-		teleop_config = std::unique_ptr<VehicleTeleopConfig>(new VehicleTeleopConfig{update_freq});
-		if (SDL_Init(SDL_INIT_VIDEO) < 0)
+		ROS_INFO("Started keyboard reader");
+		static std::chrono::steady_clock::time_point t_prev = std::chrono::steady_clock::now();
+		int c;
+		printw("Car-like keyboard control\n");
+		printw("-------------------------\n");
+		printw("    /\\   :W\n");
+		printw("A:<    > :D\n");
+		printw("    \\/   :S\n");
+		while(cstate!=ControllerState::STOPPED)
 		{
-			return false;
-		}
-		gWindow = SDL_CreateWindow("Keyboard controller", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, 800, 200, SDL_WINDOW_SHOWN);
-		gScreenSurface = SDL_GetWindowSurface(gWindow);
-		SDL_FillRect( gScreenSurface, NULL, SDL_MapRGB( gScreenSurface->format, 0xFF, 0xFF, 0xFF ) );
-
-		teleop_state->last_measurement = ros::Time::now().toSec();
-		pub_ctrl_cmd = nh.advertise<autoware_msgs::ControlCommandStamped>("/ctrl_cmd", 10);
-		ctrl_timer = nh.createTimer(ros::Duration(1.0/teleop_config->update_freq), &KeyboardApp::cbCtrlTimer, this);
-
-		return true;
-	}
-
-	void cbCtrlTimer(const ros::TimerEvent& event)
-	{
-		teleop_state->current_speed += teleop_state->acceleration * 1.0/teleop_config->update_freq;
-		switch(teleop_state->control_state)
-		{
-		case DECCELERATING:
-		{
-			teleop_state->current_speed -= 1.5 * 1.0/teleop_config->update_freq;
-			if (teleop_state->current_speed <= 0.0)
+			c = getch();
+			double dt = 0.0;
+			std::chrono::steady_clock::time_point t1 = std::chrono::steady_clock::now();
+			if (cstate == ControllerState::CONTROL || steerstate == SteerState::STEER)
 			{
-				teleop_state->current_speed = 0;
-				teleop_state->control_state = IDLE;
+				std::chrono::duration<double> d = t1 - t_prev;
+				dt = szenergy::ThresholdMax(d.count(), 1.0);
+			}
+			t_prev_ros = ros::Time::now();
+			// Handle incoming keys
+			switch(c)
+			{
+			case KEY_UP:
+			case 'W':
+			case 'w':
+			{
+				cstate = ControllerState::CONTROL;
+				cmd.cmd.linear_velocity += ACCELERATION_RATE*dt;
+				break;
+			}
+			case KEY_DOWN:
+			case 'S':
+			case 's':
+			{
+				cstate = ControllerState::CONTROL;
+				cmd.cmd.linear_velocity -= ACCELERATION_RATE*dt;
+				break;
+			}
+			case KEY_LEFT:
+			case 'a':
+			case 'A':
+			{
+				steerstate = SteerState::STEER;
+				cmd.cmd.steering_angle += ANG_RATE*dt;
+				break;
+			}
+			case KEY_RIGHT:
+			case 'd':
+			case 'D':
+			{
+				steerstate = SteerState::STEER;
+				cmd.cmd.steering_angle -= ANG_RATE*dt;
+				break;
+			}
+			default:
+			{
+				cstate = ControllerState::IDLE;
+				steerstate = SteerState::IDLE;
+			}
+			}
+			cmd.cmd.steering_angle = szenergy::Clamp(cmd.cmd.steering_angle, -LIMIT_WHEEL_ANGLE, LIMIT_WHEEL_ANGLE);
+			t_prev = t1;
+		}
+	}
+
+	void cbDecay(const ros::TimerEvent& event)
+	{
+		double dt = event.current_real.toSec() - event.last_real.toSec();
+		// Decay velocity
+		switch(cstate)
+		{
+		case ControllerState::IDLE:
+		{
+			if (std::abs(cmd.cmd.linear_velocity) > EPS_CONTROL_LINVEL_ERROR)
+			{
+				cmd.cmd.linear_velocity -= szenergy::Sgn(cmd.cmd.linear_velocity) * dt * DECAY_VEL_RATE;
+			}
+			else
+			{
+				cmd.cmd.linear_velocity = 0;
+			}
+			break;
+		}
+		case ControllerState::CONTROL:
+		{
+			if (event.current_real.toSec() - t_prev_ros.toSec() > 0.2)
+			{
+				cstate = ControllerState::IDLE;
 			}
 			break;
 		}
 		}
-		msg_ctrl_cmd.header.stamp = ros::Time::now();
-		msg_ctrl_cmd.cmd.linear_velocity = teleop_state->current_speed;
-		pub_ctrl_cmd.publish(msg_ctrl_cmd);
-	}
-
-	void run()
-	{
-		while (teleop_state->appstate!=QUIT)
+		// Steer decay
+		switch(steerstate)
 		{
-			while(SDL_PollEvent(&e)!= 0)
+		case SteerState::IDLE:
+		{
+			if (std::abs(cmd.cmd.steering_angle) > EPS_CONTROL_ANG_ERROR)
 			{
-				if (e.type == SDL_QUIT)
-				{
-					teleop_state->appstate = QUIT;
-				}
-				else if(e.type== SDL_KEYDOWN)
-				{
-					switch(e.key.keysym.sym)
-					{
-					case SDLK_UP:
-					case SDLK_w:{
-						teleop_state->control_state = ACCELERATING;
-						teleop_state->acceleration = clamp(
-								teleop_state->acceleration + D_ACCELERATION_RATE,
-								0.0,
-								MAX_ACCELERATION);
-						msg_ctrl_cmd.cmd.linear_acceleration = teleop_state->acceleration;
-						teleop_state->last_measurement = ros::Time::now().toSec();
-						break;
-					}
-					case SDLK_DOWN: {
-						teleop_state->control_state = ACCELERATING;
-						if (teleop_state->current_speed >= 0.0)
-						{
-							teleop_state->acceleration = clamp(
-									teleop_state->acceleration - D_BRAKE_RATE,
-									-MAX_BRAKE,
-									0.0);
-						}
-						else
-						{
-							teleop_state->acceleration = 0.0;
-							teleop_state->current_speed = 0.0;
-						}
-						msg_ctrl_cmd.cmd.linear_acceleration = teleop_state->acceleration;
-						teleop_state->last_measurement = ros::Time::now().toSec();
-						break;
-						break;
-					}
-
-					case SDLK_LEFT:{
-						teleop_state->wheel_angle = clamp(teleop_state->wheel_angle + D_WHEEL_ANG,
-								-MAX_WHEEL_ANG,
-								MAX_WHEEL_ANG);
-						msg_ctrl_cmd.cmd.steering_angle = teleop_state->wheel_angle;
-						break;
-					}
-					case SDLK_RIGHT:{
-						teleop_state->wheel_angle = clamp(teleop_state->wheel_angle - D_WHEEL_ANG,
-								-MAX_WHEEL_ANG,
-								MAX_WHEEL_ANG);
-						msg_ctrl_cmd.cmd.steering_angle = teleop_state->wheel_angle;
-						break;
-					}
-					}
-				}
-				else if (e.type == SDL_KEYUP)
-				{
-					switch(e.key.keysym.sym)
-					{
-					case SDLK_UP:
-					case SDLK_w:{
-						teleop_state->acceleration = 0.0;
-						msg_ctrl_cmd.cmd.linear_acceleration = teleop_state->acceleration;
-						teleop_state->last_measurement = ros::Time::now().toSec();
-						teleop_state->control_state = DECCELERATING;
-						break;
-					}
-					case SDLK_LEFT:
-					case SDLK_RIGHT:{
-						teleop_state->wheel_angle = 0.0;
-						msg_ctrl_cmd.cmd.steering_angle = 0.0;
-						break;
-					}
-					}
-				}
-
+				cmd.cmd.steering_angle -= szenergy::Sgn(cmd.cmd.steering_angle) * dt * DECAY_ANG_RATE;
 			}
-			SDL_UpdateWindowSurface(gWindow);
+			else
+			{
+				cmd.cmd.steering_angle = 0;
+			}
+			break;
+		}
+		case SteerState::STEER:
+		{
+			if (event.current_real.toSec() - t_prev_ros.toSec() > 0.2)
+			{
+				steerstate = SteerState::IDLE;
+			}
+			break;
+		}
 		}
 	}
 
-	void teardown()
+	void cbPubTimer(const ros::TimerEvent& event)
 	{
-		SDL_DestroyWindow(gWindow);
-		SDL_Quit();
+		cmd.header.stamp = ros::Time::now();
+		pub_cmd.publish(cmd);
 	}
 
+	void initialize()
+	{
+		// Initialize NCURSES
+		initscr();
+		noecho();
 
+		pub_cmd = nh.advertise<autoware_msgs::ControlCommandStamped>("/ctrl_cmd", 10);
+		timer = nh.createTimer(ros::Duration(0.02), &KeyboardController::cbPubTimer, this);
+		timer_decay = nh.createTimer(ros::Duration(0.02), &KeyboardController::cbDecay, this);
+		keyboard_thread = std::thread(&KeyboardController::keyboard_thread_worker, this);
+		timer.start();
+		ROS_INFO("Started threads");
+
+	}
+
+	void stop()
+	{
+		timer.stop();
+		clrtoeol();
+		endwin();
+		cstate = ControllerState::STOPPED;
+		ROS_INFO("Stopped threads");
+	}
 
 };
 
-
-
-
+}
 
 int main(int argc, char** argv)
 {
 	ros::init(argc,argv, "szenergy_keyboard_controller");
 	ros::NodeHandle nh;
-	ros::NodeHandle private_nh("~");
-	KeyboardApp keyboardapp(nh);
-	double update_freq = 100.0;
-	if (!private_nh.getParam("update_freq", update_freq))
+	szenergy::KeyboardController controller(nh);
+	controller.initialize();
+	while(ros::ok())
 	{
-		ROS_WARN("No update frequency specified, using default (100 Hz)");
+		ros::spinOnce();
 	}
 
-	if (keyboardapp.init(update_freq))
-	{
-		ros::AsyncSpinner spinner(4);
-		spinner.start();
-		keyboardapp.run();
-		keyboardapp.teardown();
-		return 0;
-	}
-	else
-	{
-		std::cerr << "Could not initialize SDL, quitting" << '\n';
+	controller.stop();
 
-		return -1;
-	}
+
+	return 0;
 }
