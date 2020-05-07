@@ -1,0 +1,5 @@
+repositories:
+  szenergy-common:
+    type: git
+    url: https://github.com/szenergy/szenergy-common
+    version: master
