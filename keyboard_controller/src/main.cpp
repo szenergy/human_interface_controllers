@@ -63,6 +63,12 @@ public:
 		steerstate(SteerState::IDLE),
 		cstate(ControllerState::IDLE){}
 
+
+	bool isRunning()
+	{
+		return cstate!=ControllerState::STOPPED;
+	}
+
 	void keyboard_thread_worker()
 	{
 		ROS_INFO("Started keyboard reader");
@@ -73,6 +79,7 @@ public:
 		printw("    /\\   :W\n");
 		printw("A:<    > :D\n");
 		printw("    \\/   :S\n");
+		printw("\nQ: Exit");
 		while(cstate!=ControllerState::STOPPED)
 		{
 			c = getch();
@@ -117,6 +124,16 @@ public:
 			{
 				steerstate = SteerState::STEER;
 				cmd.cmd.steering_angle -= ANG_RATE*dt;
+				break;
+			}
+			case 'q':
+			case 'Q':
+			{
+				timer.stop();
+				timer_decay.stop();
+				cmd.cmd.linear_velocity = 0.0;
+				cmd.cmd.steering_angle = 0.0;
+				cstate = ControllerState::STOPPED;				
 				break;
 			}
 			default:
@@ -223,7 +240,7 @@ int main(int argc, char** argv)
 	ros::NodeHandle nh;
 	szenergy::KeyboardController controller(nh);
 	controller.initialize();
-	while(ros::ok())
+	while(ros::ok() && controller.isRunning())
 	{
 		ros::spinOnce();
 	}
