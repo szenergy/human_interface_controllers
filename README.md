@@ -11,6 +11,9 @@ vcs -w1 import < ../req.repos
 To use this software, install the following prerequisites:
 - libncurses (sudo apt install libncurses-dev)
 
+If you require game-like keyboard control:
+- libsdl2-dev
+
 # Getting started
 
 ## Keyboard controller
