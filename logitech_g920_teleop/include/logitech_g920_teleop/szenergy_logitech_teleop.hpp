@@ -71,12 +71,12 @@ public:
         const char& brake_state)
     {
         teleop_pub_state.msg_steer.data = szenergy::Clamp(steer_angle, 
-                control_state.steerMin, control_state.steerMax
+                -1.0, 1.0
             );        
-        teleop_pub_state.msg_torque.data = szenergy::CutoffRange(
-            szenergy::Clamp(gaspedal, 0.0, 1.0), 
-            STEER_THROTTLE_EPSILON_MIN, 0.0,
-            STEER_THROTTLE_EPSILON_MAX, 1.0);
+        teleop_pub_state.msg_torque.data = 
+            szenergy::Clamp(gaspedal, 0.0, 1.0); 
+            
+            
         // TODO: this part stinks as hell
         double linvel = szenergy::CutoffRange(
             szenergy::Clamp(gaspedal, 0.0, 1.0), 
