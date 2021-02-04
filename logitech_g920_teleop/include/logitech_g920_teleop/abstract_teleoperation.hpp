@@ -44,7 +44,7 @@ public:
             szenergy::TELEOP_QUEUE_SIZE);
         pub_cmd_steer = nh->advertise<std_msgs::Float64>("/airsim_node/PhysXCar/car_cmd_body_frame/steering",
             szenergy::TELEOP_QUEUE_SIZE);
-        pub_cmd_brake = nh->advertise<std_msgs::Float64>("//airsim_node/PhysXCar/car_cmd_body_frame/brake",
+        pub_cmd_brake = nh->advertise<std_msgs::Float64>("/airsim_node/PhysXCar/car_cmd_body_frame/brake",
             szenergy::TELEOP_QUEUE_SIZE);
         
     }
