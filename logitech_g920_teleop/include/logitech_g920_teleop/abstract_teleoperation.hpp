@@ -76,7 +76,7 @@ protected:
     ros::Publisher pub_cmd_vel; ///< Publish geometry_twist
     ros::Publisher pub_autoware_cmd; ///< Publish autoware control command
     geometry_msgs::TwistStamped cmd_vel_msg;
-    autoware_msgs::ControlCommandStamped cmd_autoware_msg;
+    //autoware_msgs::ControlCommandStamped cmd_autoware_msg;
 public:
     SzenergyRosTeleoperation(const szenergy::TeleopState& state, std::shared_ptr<ros::NodeHandle> nh): control_state(state), nh(nh)
     {}
@@ -84,28 +84,28 @@ public:
     /**
      * @brief: Initialize with publisher instance
      * */
-    void Init(std::unique_ptr<AbstractTeleopPublisher> pub)
-    {
-        publisher = std::move(pub);
-        publisher->Init();
-        pub_cmd_vel = nh->advertise<geometry_msgs::TwistStamped>("/twist_cmd", szenergy::TELEOP_QUEUE_SIZE);
-        pub_autoware_cmd = nh->advertise<autoware_msgs::ControlCommandStamped>("/ctrl_cmd", 10);
-        /// Initialize stamp
-        cmd_vel_msg.header.frame_id = "base_link";
-        cmd_autoware_msg.header.frame_id = "base_link";
-    }
+    // void Init(std::unique_ptr<AbstractTeleopPublisher> pub)
+    // {
+    //     publisher = std::move(pub);
+    //     publisher->Init();
+    //     pub_cmd_vel = nh->advertise<geometry_msgs::TwistStamped>("/twist_cmd", szenergy::TELEOP_QUEUE_SIZE);
+    //     pub_autoware_cmd = nh->advertise<autoware_msgs::ControlCommandStamped>("/ctrl_cmd", 10);
+    //     /// Initialize stamp
+    //     cmd_vel_msg.header.frame_id = "base_link";
+    //     cmd_autoware_msg.header.frame_id = "base_link";
+    // }
 
-    /**
-     * @brief: Publish through main connector
-     * */
-    void PublishCmd()
-    {
-        cmd_vel_msg.header.stamp = timestamp;
-        cmd_autoware_msg.header.stamp = timestamp;
-        publisher->PublishCmd(teleop_pub_state);
-        pub_cmd_vel.publish(cmd_vel_msg);
-        pub_autoware_cmd.publish(cmd_autoware_msg);
-    }
+    // /**
+    //  * @brief: Publish through main connector
+    //  * */
+    // void PublishCmd()
+    // {
+    //     cmd_vel_msg.header.stamp = timestamp;
+    //     cmd_autoware_msg.header.stamp = timestamp;
+    //     publisher->PublishCmd(teleop_pub_state);
+    //     pub_cmd_vel.publish(cmd_vel_msg);
+    //     pub_autoware_cmd.publish(cmd_autoware_msg);
+    // }
     
 
     /**

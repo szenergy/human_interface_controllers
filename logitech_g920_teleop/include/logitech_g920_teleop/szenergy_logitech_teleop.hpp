@@ -85,10 +85,10 @@ public:
         double steerangle = szenergy::Clamp(steer_angle, 
             control_state.steerMin, control_state.steerMax
         );
-        cmd_vel_msg.twist.linear.x = linvel;
-        cmd_vel_msg.twist.angular.z = steerangle;
-        cmd_autoware_msg.cmd.linear_velocity = linvel;
-        cmd_autoware_msg.cmd.steering_angle = steerangle;
+        // cmd_vel_msg.twist.linear.x = linvel;
+        // cmd_vel_msg.twist.angular.z = steerangle;
+        // cmd_autoware_msg.cmd.linear_velocity = linvel;
+        // cmd_autoware_msg.cmd.steering_angle = steerangle;
         if (brake_state){
             teleop_pub_state.msg_brake.data = true;
             cmd_vel_msg.twist.linear.x = -cmd_vel_msg.twist.linear.x;
@@ -112,7 +112,7 @@ public:
             control_state.gaspedal = (GAS_PEDAL_MAX-(double)axis[1])/GAS_PEDAL_RANGE; 
             brake_state = button[1];
             UpdateCmd(control_state.gaspedal, control_state.steer_angle, brake_state);
-            PublishCmd();
+            //PublishCmd();
             std::this_thread::yield();
             r.sleep();
         }
